@@ -1,0 +1,8 @@
+---
+alwaysApply: true
+---
+All customer-owned data must be protected by RLS.
+Guest checkout must still create a durable order record.
+Separate customer profiles from guest order records.
+Do not expose service-role credentials to the client.
+Keep payment verification server-side.

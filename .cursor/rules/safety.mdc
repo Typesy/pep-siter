@@ -1,0 +1,7 @@
+---
+alwaysApply: true
+---
+Products are presented as research products only.
+Do not generate medical claims, treatment claims, dosage advice, or consumer health promises.
+Keep copy neutral and operational.
+Route bulk-order flows to contact email rather than custom quote logic.

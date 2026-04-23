@@ -1,0 +1,8 @@
+---
+alwaysApply: true
+---
+Keep components small and reusable.
+Use clean ecommerce patterns.
+Avoid over-abstracting early.
+Mobile-first layouts.
+Product cards, cart, checkout summary, admin tables must be simple and functional before pretty.

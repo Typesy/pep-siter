@@ -1,0 +1,9 @@
+---
+alwaysApply: true
+---
+Plan before coding.
+For non-trivial changes, first state what files will change and why.
+Do not refactor unrelated files.
+Make the smallest working change.
+After coding, verify with build/test/lint.
+If a change touches auth, payments, or orders, explain the data flow first.

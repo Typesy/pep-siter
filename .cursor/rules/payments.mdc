@@ -1,0 +1,9 @@
+---
+alwaysApply: true
+---
+MVP payments must use Authorize.net Accept Hosted.
+Never collect raw card data in the app.
+Payment success does not equal order fulfillment until verified server-side.
+Record payment status separately from order status.
+Handle success, failure, cancellation, and pending states explicitly.
+Keep payment logic isolated in a dedicated lib/service layer.

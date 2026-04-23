@@ -1,0 +1,10 @@
+---
+alwaysApply: true
+---
+Use Next.js with TypeScript.
+Use Tailwind for styling.
+Use Supabase for auth and database.
+Use Authorize.net Accept Hosted for MVP payments.
+Do not introduce new frameworks without explicit approval.
+Prefer server-side logic for sensitive flows.
+Keep dependencies minimal and mainstream.
