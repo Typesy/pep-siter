@@ -11,54 +11,54 @@
 
 ## Phase 2 — Database Schema
 
-- [ ] Create products table
-- [ ] Create profiles table
-- [ ] Create orders table
-- [ ] Create order_items table
-- [ ] Create addresses table
-- [ ] Create payments table
+- [x] Create products table
+- [x] Create profiles table
+- [x] Create orders table
+- [x] Create order_items table
+- [x] Create addresses table
+- [x] Create payments table
 
-- [ ] Set up relationships between tables
-- [ ] Enable Row Level Security (RLS)
-- [ ] Create basic RLS policies (users can only access their own data)
+- [x] Set up relationships between tables
+- [x] Enable Row Level Security (RLS)
+- [x] Create basic RLS policies (users can only access their own data)
 
 ---
 
 ## Phase 3 — Auth
 
-- [ ] Set up Supabase Auth
-- [ ] Create signup flow
-- [ ] Create login flow
-- [ ] Create session handling
-- [ ] Create user profile record on signup
+- [x] Set up Supabase Auth
+- [x] Create signup flow
+- [x] Create login flow
+- [x] Create session handling
+- [x] Create user profile record on signup
 
 ---
 
 ## Phase 4 — Product System
 
-- [ ] Create product listing page
-- [ ] Create product card component
-- [ ] Create product detail page
-- [ ] Fetch products from database
+- [x] Create product listing page
+- [x] Create product card component
+- [x] Create product detail page
+- [x] Fetch products from database
 
 ---
 
 ## Phase 5 — Cart System
 
-- [ ] Create cart state (local or global state)
-- [ ] Add product to cart
-- [ ] Remove product from cart
-- [ ] Update product quantity
-- [ ] Create cart page UI
-- [ ] Display cart totals
+- [x] Create cart state (local or global state)
+- [x] Add product to cart
+- [x] Remove product from cart
+- [x] Update product quantity
+- [x] Create cart page UI
+- [x] Display cart totals
 
 ---
 
 ## Phase 6 — Checkout Flow
 
-- [ ] Create checkout page
-- [ ] Collect shipping information
-- [ ] Display order summary
+- [x] Create checkout page
+- [x] Collect shipping information
+- [x] Display order summary
 - [ ] Create order record before payment
 
 ---
