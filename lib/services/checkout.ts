@@ -13,9 +13,6 @@ export type CheckoutFormInput = {
 
 export type CheckoutCartItem = {
   productId: string;
-  slug: string;
-  name: string;
-  priceCents: number;
   quantity: number;
 };
 
@@ -73,23 +70,16 @@ function parseCartSnapshot(raw: string): CheckoutCartItem[] {
   return parsed
     .map((item) => {
       const row = item as Partial<CheckoutCartItem>;
-      const price = Number(row.priceCents);
       const quantity = Number(row.quantity);
-      if (!row.productId || !row.slug || !row.name) {
+      if (!row.productId) {
         return null;
       }
-      if (!Number.isFinite(price) || price < 0) {
-        return null;
-      }
-      if (!Number.isFinite(quantity) || quantity <= 0) {
+      if (!Number.isInteger(quantity) || quantity <= 0) {
         return null;
       }
       return {
         productId: String(row.productId),
-        slug: String(row.slug),
-        name: String(row.name),
-        priceCents: Math.round(price),
-        quantity: Math.floor(quantity),
+        quantity,
       } satisfies CheckoutCartItem;
     })
     .filter((row): row is CheckoutCartItem => Boolean(row));
@@ -143,11 +133,6 @@ export function validateCheckoutInput(input: CheckoutFormInput) {
     fieldErrors.cart = "Your cart is empty.";
   }
 
-  const subtotalCents = cartItems.reduce(
-    (sum, item) => sum + item.priceCents * item.quantity,
-    0,
-  );
-
   const preparedCheckout: PreparedCheckout = {
     contact: {
       email: input.email,
@@ -163,7 +148,7 @@ export function validateCheckoutInput(input: CheckoutFormInput) {
       country: input.country,
     },
     cartItems,
-    subtotalCents,
+    subtotalCents: 0,
   };
 
   return {

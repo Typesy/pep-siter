@@ -59,18 +59,18 @@
 - [x] Create checkout page
 - [x] Collect shipping information
 - [x] Display order summary
-- [ ] Create order record before payment
+- [x] Create order record before payment
 
 ---
 
 ## Phase 7 — Payments (Authorize.net)
 
-- [ ] Integrate Authorize.net Accept Hosted
-- [ ] Redirect user to hosted payment page
-- [ ] Handle return from payment flow
-- [ ] Verify payment server-side
-- [ ] Update payment record
-- [ ] Update order status
+- [x] Integrate Authorize.net Accept Hosted
+- [x] Redirect user to hosted payment page
+- [x] Handle return from payment flow
+- [x] Verify payment server-side
+- [x] Update payment record
+- [x] Update order status
 
 ---
 

@@ -16,6 +16,11 @@ export type CheckoutActionState = {
     country: string;
   };
   preparedSubtotalCents: number | null;
+  orderId: string | null;
+  hostedPayment: {
+    token: string;
+    formActionUrl: string;
+  } | null;
 };
 
 export const initialCheckoutActionState: CheckoutActionState = {
@@ -34,4 +39,6 @@ export const initialCheckoutActionState: CheckoutActionState = {
     country: "",
   },
   preparedSubtotalCents: null,
+  orderId: null,
+  hostedPayment: null,
 };

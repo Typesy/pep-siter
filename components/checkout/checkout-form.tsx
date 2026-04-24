@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useMemo } from "react";
+import { useActionState, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useCart } from "@/components/cart/cart-provider";
 import { initialCheckoutActionState } from "@/app/checkout/state";
@@ -34,20 +34,26 @@ export function CheckoutForm() {
   const safeFormError = safeState.formError ?? null;
   const safeSuccess = safeState.success ?? null;
   const safePreparedSubtotal = safeState.preparedSubtotalCents ?? null;
+  const hostedPayment = safeState.hostedPayment;
+  const hostedFormRef = useRef<HTMLFormElement | null>(null);
 
   const cartSnapshot = useMemo(
     () =>
       JSON.stringify(
         items.map((item) => ({
           productId: item.productId,
-          slug: item.slug,
-          name: item.name,
-          priceCents: item.priceCents,
           quantity: item.quantity,
         })),
       ),
     [items],
   );
+
+  useEffect(() => {
+    if (!hostedPayment) {
+      return;
+    }
+    hostedFormRef.current?.submit();
+  }, [hostedPayment]);
 
   if (!isHydrated) {
     return (
@@ -64,6 +70,31 @@ export function CheckoutForm() {
         <Link className="mt-3 inline-block font-medium text-gray-900 underline" href="/shop">
           Browse products
         </Link>
+      </div>
+    );
+  }
+
+  if (hostedPayment) {
+    return (
+      <div className="mx-auto max-w-lg rounded-lg border border-gray-200 bg-white p-6">
+        <h2 className="text-lg font-semibold text-gray-900">Redirecting to secure payment...</h2>
+        <p className="mt-2 text-sm text-gray-600">
+          You are being sent to Authorize.net to enter payment details securely.
+        </p>
+        <form
+          ref={hostedFormRef}
+          action={hostedPayment.formActionUrl}
+          method="post"
+          className="mt-4 space-y-3"
+        >
+          <input type="hidden" name="token" value={hostedPayment.token} />
+          <button
+            type="submit"
+            className="rounded bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800"
+          >
+            Continue to Authorize.net
+          </button>
+        </form>
       </div>
     );
   }
@@ -254,7 +285,8 @@ export function CheckoutForm() {
             </div>
           ) : null}
           <p className="mt-3 text-xs text-gray-500">
-            Final pricing and product status must be re-validated server-side in payment phase.
+            Final pricing and product status are re-validated server-side before payment token
+            creation.
           </p>
         </div>
       </aside>
