@@ -1,5 +1,8 @@
 import Link from "next/link";
-import { getPublicOrderPaymentStatus } from "@/lib/services/orders";
+import {
+  attemptFinalizePendingOrder,
+  getPublicOrderPaymentStatus,
+} from "@/lib/services/orders";
 
 type CheckoutSuccessPageProps = {
   searchParams: Promise<{ orderId?: string }>;
@@ -42,6 +45,10 @@ export default async function CheckoutSuccessPage({
   let statusLookupError: string | null = null;
   try {
     status = await getPublicOrderPaymentStatus(orderId);
+    if (status && status.paymentStatus === "pending") {
+      await attemptFinalizePendingOrder(orderId);
+      status = await getPublicOrderPaymentStatus(orderId);
+    }
   } catch (error) {
     statusLookupError = error instanceof Error ? error.message : "Unable to load order status";
   }

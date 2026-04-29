@@ -19,6 +19,8 @@ export type TransactionDetailsResult = {
   transactionStatus: string;
   responseCode: number;
   invoiceNumber: string | null;
+  authAmount: number | null;
+  settleAmount: number | null;
   raw: unknown;
 };
 
@@ -33,6 +35,7 @@ type CheckoutPaymentPayload = {
   country: string;
   localOrderId: string;
   invoiceNumber: string;
+  refId?: string;
 };
 
 type AuthorizeNetEnv = {
@@ -101,6 +104,10 @@ function getAuthorizeNetHostedPaymentEndpoint(
     : "https://test.authorize.net/payment/payment";
 }
 
+export function buildAuthorizeRefId(orderId: string): string {
+  return orderId.replace(/-/g, "").slice(0, 20);
+}
+
 function dollarsFromCents(cents: number): string {
   return (cents / 100).toFixed(2);
 }
@@ -160,7 +167,7 @@ export async function getHostedPaymentToken(
   const { firstName, lastName } = splitFullName(payload.fullName);
   const successUrl = `${env.appUrl}/checkout/success?orderId=${encodeURIComponent(payload.localOrderId)}`;
   const cancelUrl = `${env.appUrl}/checkout/cancel?orderId=${encodeURIComponent(payload.localOrderId)}`;
-  const refId = payload.localOrderId.replace(/-/g, "").slice(0, 20);
+  const refId = payload.refId ?? buildAuthorizeRefId(payload.localOrderId);
 
   const request = {
     getHostedPaymentPageRequest: {
@@ -281,6 +288,8 @@ export async function getTransactionDetails(
       transId?: string;
       transactionStatus?: string;
       responseCode?: number;
+      authAmount?: number | string;
+      settleAmount?: number | string;
       order?: { invoiceNumber?: string };
     };
   }>(request);
@@ -296,35 +305,165 @@ export async function getTransactionDetails(
     transactionStatus: transaction.transactionStatus,
     responseCode: Number(transaction.responseCode ?? 0),
     invoiceNumber: transaction.order?.invoiceNumber ?? null,
+    authAmount:
+      transaction.authAmount !== undefined ? Number(transaction.authAmount) : null,
+    settleAmount:
+      transaction.settleAmount !== undefined ? Number(transaction.settleAmount) : null,
     raw: response,
   };
+}
+
+export function getTransactionAmountCents(details: TransactionDetailsResult): number | null {
+  const settle = details.settleAmount;
+  if (settle !== null && Number.isFinite(settle) && settle > 0) {
+    return Math.round(settle * 100);
+  }
+  const auth = details.authAmount;
+  if (auth !== null && Number.isFinite(auth) && auth > 0) {
+    return Math.round(auth * 100);
+  }
+  return null;
+}
+
+export type AuthorizeTransactionState = {
+  paymentStatus: "pending" | "authorized" | "paid" | "failed" | "cancelled";
+  orderStatus: "pending" | "paid" | "cancelled";
+};
+
+export type AuthorizeWebhookSignatureDiagnostics = {
+  keyLength: number;
+  keyIsValidHex: boolean;
+  receivedSignatureLength: number;
+  computedSignatureLength: number;
+  prefixPresent: boolean;
+};
+
+export function mapAuthorizeTransactionState(params: {
+  transactionStatus: string;
+  responseCode: number;
+}): AuthorizeTransactionState {
+  const status = params.transactionStatus.toLowerCase();
+  const approved = params.responseCode === 1;
+
+  if (approved && (status === "capturedpendingsettlement" || status === "settledsuccessfully")) {
+    return { paymentStatus: "paid", orderStatus: "paid" };
+  }
+  if (approved && status === "authorizedpendingcapture") {
+    return { paymentStatus: "authorized", orderStatus: "pending" };
+  }
+  if (status.includes("void") || status.includes("cancel")) {
+    return { paymentStatus: "cancelled", orderStatus: "cancelled" };
+  }
+  if (status.includes("declin") || status.includes("fail") || status.includes("error")) {
+    return { paymentStatus: "failed", orderStatus: "pending" };
+  }
+  return { paymentStatus: "pending", orderStatus: "pending" };
+}
+
+export async function findUnsettledTransactionIdByInvoiceNumber(
+  invoiceNumber: string,
+): Promise<string | null> {
+  const env = getAuthorizeNetEnv();
+  const request = {
+    getUnsettledTransactionListRequest: {
+      merchantAuthentication: {
+        name: env.apiLoginId,
+        transactionKey: env.transactionKey,
+      },
+    },
+  };
+
+  const response = await authorizeNetRequest<{
+    messages?: {
+      resultCode?: "Ok" | "Error";
+      message?: Array<{ code?: string; text?: string }>;
+    };
+    transactions?:
+      | Array<{
+          transId?: string;
+          invoiceNumber?: string;
+        }>
+      | {
+          transaction?: Array<{
+            transId?: string;
+            invoiceNumber?: string;
+          }>;
+        };
+  }>(request);
+
+  if (response.messages?.resultCode === "Error") {
+    const firstMessage = response.messages.message?.[0];
+    const code = firstMessage?.code ?? "UNKNOWN";
+    const text = firstMessage?.text ?? "Authorize.net request failed";
+    throw new Error(`Authorize.net error ${code}: ${text}`);
+  }
+
+  const transactions = Array.isArray(response.transactions)
+    ? response.transactions
+    : response.transactions?.transaction ?? [];
+  const matched = transactions.find(
+    (row) =>
+      row.invoiceNumber?.trim().toLowerCase() === invoiceNumber.trim().toLowerCase(),
+  );
+
+  return matched?.transId?.trim() ?? null;
 }
 
 export function verifyAuthorizeNetWebhookSignature(
   rawBody: string,
   headerSignature: string | null,
 ): boolean {
-  if (!headerSignature) {
-    return false;
-  }
+  return inspectAuthorizeNetWebhookSignature(rawBody, headerSignature).isValid;
+}
+
+export function inspectAuthorizeNetWebhookSignature(
+  rawBody: string,
+  headerSignature: string | null,
+): {
+  isValid: boolean;
+  diagnostics: AuthorizeWebhookSignatureDiagnostics;
+} {
   const env = getAuthorizeNetEnv();
   if (!env.webhookSignatureKey) {
     throw new Error("Missing AUTHORIZE_NET_WEBHOOK_SIGNATURE_KEY");
   }
 
-  const expected = crypto
-    .createHmac("sha512", Buffer.from(env.webhookSignatureKey, "hex"))
-    .update(rawBody)
-    .digest("hex")
+  const signatureKey = env.webhookSignatureKey.trim();
+  const keyIsValidHex = /^[0-9a-fA-F]{128}$/.test(signatureKey);
+  const prefixPresent = /^sha512=/i.test(headerSignature ?? "");
+  const provided = (headerSignature ?? "")
+    .replace(/^sha512=/i, "")
+    .trim()
     .toUpperCase();
+  const providedIsHex =
+    provided.length > 0 && provided.length % 2 === 0 && /^[0-9A-F]+$/.test(provided);
 
-  const provided = headerSignature.replace(/^sha512=/i, "").trim().toUpperCase();
-  if (provided.length !== expected.length) {
-    return false;
-  }
+  const expected = keyIsValidHex
+    ? crypto
+        .createHmac("sha512", Buffer.from(signatureKey, "hex"))
+        .update(rawBody)
+        .digest("hex")
+        .toUpperCase()
+    : "";
 
-  return crypto.timingSafeEqual(
-    Buffer.from(provided, "hex"),
-    Buffer.from(expected, "hex"),
-  );
+  const receivedSignatureLength = provided.length;
+  const computedSignatureLength = expected.length;
+
+  const sameLength = receivedSignatureLength === computedSignatureLength;
+  const isValid =
+    keyIsValidHex &&
+    providedIsHex &&
+    sameLength &&
+    crypto.timingSafeEqual(Buffer.from(provided, "hex"), Buffer.from(expected, "hex"));
+
+  return {
+    isValid,
+    diagnostics: {
+      keyLength: signatureKey.length,
+      keyIsValidHex,
+      receivedSignatureLength,
+      computedSignatureLength,
+      prefixPresent,
+    },
+  };
 }

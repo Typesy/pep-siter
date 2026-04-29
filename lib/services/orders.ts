@@ -1,5 +1,12 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { getHostedPaymentToken } from "@/lib/payments/authorize-net";
+import {
+  buildAuthorizeRefId,
+  findUnsettledTransactionIdByInvoiceNumber,
+  getHostedPaymentToken,
+  getTransactionAmountCents,
+  getTransactionDetails,
+  mapAuthorizeTransactionState,
+} from "@/lib/payments/authorize-net";
 
 export type CheckoutProductRequestItem = {
   productId: string;
@@ -46,6 +53,14 @@ type DbProduct = {
 function buildInvoiceNumber(orderId: string): string {
   return `ORD${orderId.replace(/-/g, "").slice(0, 17)}`;
 }
+
+type PaymentRow = {
+  id: string;
+  status: string;
+  amount_cents: number;
+  provider_transaction_id: string | null;
+  raw_response: Record<string, unknown> | null;
+};
 
 function normalizeProductRequests(
   items: CheckoutProductRequestItem[],
@@ -126,6 +141,7 @@ export async function createPendingCheckoutPayment(
   }
   const orderId = orderInsert.data.id as string;
   const invoiceNumber = buildInvoiceNumber(orderId);
+  const refId = buildAuthorizeRefId(orderId);
 
   try {
     const orderItemsPayload = normalizedRequests.map((requestItem) => {
@@ -172,6 +188,7 @@ export async function createPendingCheckoutPayment(
         amount_cents: totalCents,
         raw_response: {
           authorize_invoice_number: invoiceNumber,
+          authorize_ref_id: refId,
           authorize_order_id: orderId,
         },
       })
@@ -195,6 +212,7 @@ export async function createPendingCheckoutPayment(
       country: input.address.country,
       localOrderId: orderId,
       invoiceNumber,
+      refId,
     });
 
     const paymentUpdate = await supabaseAdmin
@@ -202,6 +220,7 @@ export async function createPendingCheckoutPayment(
       .update({
         raw_response: {
           authorize_invoice_number: invoiceNumber,
+          authorize_ref_id: refId,
           authorize_order_id: orderId,
           authorize_hosted_token_obtained: true,
         },
@@ -267,31 +286,46 @@ export async function getPublicOrderPaymentStatus(
 export async function updateOrderPaymentFromAuthorizeNet(params: {
   transactionId: string;
   invoiceNumber: string | null;
+  refId?: string | null;
   paymentStatus: "pending" | "authorized" | "paid" | "failed" | "cancelled";
   orderStatus: "pending" | "paid" | "cancelled";
   rawResponse: unknown;
 }) {
   const supabaseAdmin = createSupabaseAdminClient();
 
-  if (!params.invoiceNumber) {
-    throw new Error("Authorize.net transaction is missing invoice number");
+  let paymentLookup = null as { id: string; order_id: string } | null;
+  if (params.invoiceNumber) {
+    const byInvoice = await supabaseAdmin
+      .from("payments")
+      .select("id, order_id")
+      .contains("raw_response", { authorize_invoice_number: params.invoiceNumber })
+      .maybeSingle();
+    if (byInvoice.error) {
+      throw new Error(
+        `Failed to look up payment by invoice number: ${byInvoice.error.message}`,
+      );
+    }
+    paymentLookup = (byInvoice.data as { id: string; order_id: string } | null) ?? null;
   }
 
-  const paymentLookup = await supabaseAdmin
-    .from("payments")
-    .select("id, order_id")
-    .contains("raw_response", { authorize_invoice_number: params.invoiceNumber })
-    .maybeSingle();
-
-  if (paymentLookup.error) {
-    throw new Error(`Failed to look up payment by invoice number: ${paymentLookup.error.message}`);
+  if (!paymentLookup && params.refId) {
+    const byRefId = await supabaseAdmin
+      .from("payments")
+      .select("id, order_id")
+      .contains("raw_response", { authorize_ref_id: params.refId })
+      .maybeSingle();
+    if (byRefId.error) {
+      throw new Error(`Failed to look up payment by refId: ${byRefId.error.message}`);
+    }
+    paymentLookup = (byRefId.data as { id: string; order_id: string } | null) ?? null;
   }
-  if (!paymentLookup.data) {
-    throw new Error("No local payment found for Authorize.net invoice number");
+
+  if (!paymentLookup) {
+    throw new Error("No local payment found for Authorize.net transaction mapping");
   }
 
-  const paymentId = paymentLookup.data.id as string;
-  const orderId = paymentLookup.data.order_id as string;
+  const paymentId = paymentLookup.id;
+  const orderId = paymentLookup.order_id;
 
   const paymentUpdate = await supabaseAdmin
     .from("payments")
@@ -300,8 +334,10 @@ export async function updateOrderPaymentFromAuthorizeNet(params: {
       provider_transaction_id: params.transactionId,
       raw_response: {
         authorize_invoice_number: params.invoiceNumber,
+        authorize_ref_id: params.refId ?? null,
         authorize_order_id: orderId,
         authorize_verified: true,
+        authorize_transaction_id: params.transactionId,
         authorize_last_response: params.rawResponse,
       },
     })
@@ -321,4 +357,228 @@ export async function updateOrderPaymentFromAuthorizeNet(params: {
   }
 
   return { orderId, paymentId };
+}
+
+async function getOrderAndPaymentForVerification(orderId: string): Promise<{
+  orderId: string;
+  orderStatus: string;
+  totalCents: number;
+  payment: PaymentRow | null;
+}> {
+  const supabaseAdmin = createSupabaseAdminClient();
+  const { data, error } = await supabaseAdmin
+    .from("orders")
+    .select(
+      "id, status, total_cents, payments(id, status, amount_cents, provider_transaction_id, raw_response)",
+    )
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to fetch order for verification: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error("Order not found");
+  }
+
+  const payment = Array.isArray(data.payments) ? data.payments[0] : data.payments;
+  return {
+    orderId: String(data.id),
+    orderStatus: String(data.status),
+    totalCents: Number(data.total_cents),
+    payment: payment
+      ? {
+          id: String(payment.id),
+          status: String(payment.status),
+          amount_cents: Number(payment.amount_cents),
+          provider_transaction_id: payment.provider_transaction_id
+            ? String(payment.provider_transaction_id)
+            : null,
+          raw_response:
+            payment.raw_response && typeof payment.raw_response === "object"
+              ? (payment.raw_response as Record<string, unknown>)
+              : null,
+        }
+      : null,
+  };
+}
+
+function getRawResponseString(
+  rawResponse: Record<string, unknown> | null,
+  key: string,
+): string | null {
+  const value = rawResponse?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export async function attemptFinalizePendingOrder(orderId: string): Promise<{
+  orderId: string;
+  orderStatus: string;
+  paymentStatus: string;
+  verificationAttempted: boolean;
+}> {
+  const snapshot = await getOrderAndPaymentForVerification(orderId);
+  if (!snapshot.payment) {
+    return {
+      orderId: snapshot.orderId,
+      orderStatus: snapshot.orderStatus,
+      paymentStatus: "pending",
+      verificationAttempted: false,
+    };
+  }
+  if (snapshot.payment.status === "paid") {
+    return {
+      orderId: snapshot.orderId,
+      orderStatus: snapshot.orderStatus,
+      paymentStatus: snapshot.payment.status,
+      verificationAttempted: false,
+    };
+  }
+
+  const invoiceNumber = getRawResponseString(
+    snapshot.payment.raw_response,
+    "authorize_invoice_number",
+  );
+  const refId = getRawResponseString(snapshot.payment.raw_response, "authorize_ref_id");
+
+  let transactionId = snapshot.payment.provider_transaction_id;
+  if (!transactionId && invoiceNumber) {
+    transactionId = await findUnsettledTransactionIdByInvoiceNumber(invoiceNumber);
+  }
+  if (!transactionId) {
+    return {
+      orderId: snapshot.orderId,
+      orderStatus: snapshot.orderStatus,
+      paymentStatus: snapshot.payment.status,
+      verificationAttempted: true,
+    };
+  }
+
+  const details = await getTransactionDetails(transactionId);
+  const mapped = mapAuthorizeTransactionState({
+    transactionStatus: details.transactionStatus,
+    responseCode: details.responseCode,
+  });
+  const amountCents = getTransactionAmountCents(details);
+  const amountMatches = amountCents === snapshot.totalCents;
+
+  const canMarkPaid = mapped.paymentStatus === "paid" && amountMatches;
+  const nextPaymentStatus = canMarkPaid
+    ? "paid"
+    : mapped.paymentStatus === "paid"
+      ? "failed"
+      : mapped.paymentStatus;
+  const nextOrderStatus = canMarkPaid ? "paid" : mapped.orderStatus;
+
+  const updated = await updateOrderPaymentFromAuthorizeNet({
+    transactionId: details.transId,
+    invoiceNumber: details.invoiceNumber ?? invoiceNumber,
+    refId,
+    paymentStatus: nextPaymentStatus,
+    orderStatus: nextOrderStatus,
+    rawResponse: {
+      verification_source: "order_success_fallback",
+      transactionStatus: details.transactionStatus,
+      responseCode: details.responseCode,
+      expectedAmountCents: snapshot.totalCents,
+      gatewayAmountCents: amountCents,
+      amountMatches,
+      details: details.raw,
+    },
+  });
+
+  return {
+    orderId: updated.orderId,
+    orderStatus: nextOrderStatus,
+    paymentStatus: nextPaymentStatus,
+    verificationAttempted: true,
+  };
+}
+
+export async function processAuthorizeNetTransactionVerification(params: {
+  transactionId: string;
+  webhookEventType?: string;
+  webhookPayload?: {
+    payload?: {
+      invoiceNumber?: string;
+      refId?: string;
+    };
+  };
+}) {
+  const details = await getTransactionDetails(params.transactionId);
+  const mapped = mapAuthorizeTransactionState({
+    transactionStatus: details.transactionStatus,
+    responseCode: details.responseCode,
+  });
+
+  const supabaseAdmin = createSupabaseAdminClient();
+  const invoiceNumber =
+    details.invoiceNumber ?? params.webhookPayload?.payload?.invoiceNumber ?? null;
+  const refId = params.webhookPayload?.payload?.refId ?? null;
+
+  let paymentLookup = null as {
+    order_id: string;
+    amount_cents: number;
+    raw_response: Record<string, unknown> | null;
+  } | null;
+  if (invoiceNumber) {
+    const byInvoice = await supabaseAdmin
+      .from("payments")
+      .select("order_id, amount_cents, raw_response")
+      .contains("raw_response", { authorize_invoice_number: invoiceNumber })
+      .maybeSingle();
+    if (byInvoice.error) {
+      throw new Error(
+        `Failed to fetch mapped payment by invoice for verification: ${byInvoice.error.message}`,
+      );
+    }
+    paymentLookup = (byInvoice.data as typeof paymentLookup) ?? null;
+  }
+  if (!paymentLookup && refId) {
+    const byRefId = await supabaseAdmin
+      .from("payments")
+      .select("order_id, amount_cents, raw_response")
+      .contains("raw_response", { authorize_ref_id: refId })
+      .maybeSingle();
+    if (byRefId.error) {
+      throw new Error(
+        `Failed to fetch mapped payment by refId for verification: ${byRefId.error.message}`,
+      );
+    }
+    paymentLookup = (byRefId.data as typeof paymentLookup) ?? null;
+  }
+  if (!paymentLookup) {
+    throw new Error("No local payment mapping found for transaction verification");
+  }
+
+  const expectedAmountCents = Number(paymentLookup.amount_cents);
+  const amountCents = getTransactionAmountCents(details);
+  const amountMatches = amountCents === expectedAmountCents;
+
+  const canMarkPaid = mapped.paymentStatus === "paid" && amountMatches;
+  const nextPaymentStatus = canMarkPaid
+    ? "paid"
+    : mapped.paymentStatus === "paid"
+      ? "failed"
+      : mapped.paymentStatus;
+  const nextOrderStatus = canMarkPaid ? "paid" : mapped.orderStatus;
+
+  return updateOrderPaymentFromAuthorizeNet({
+    transactionId: details.transId,
+    invoiceNumber,
+    refId,
+    paymentStatus: nextPaymentStatus,
+    orderStatus: nextOrderStatus,
+    rawResponse: {
+      verification_source: "authorize_webhook",
+      webhookEventType: params.webhookEventType ?? null,
+      webhookPayload: params.webhookPayload ?? null,
+      transactionStatus: details.transactionStatus,
+      responseCode: details.responseCode,
+      expectedAmountCents,
+      gatewayAmountCents: amountCents,
+      amountMatches,
+      details: details.raw,
+    },
+  });
 }
